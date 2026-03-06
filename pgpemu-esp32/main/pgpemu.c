@@ -1090,18 +1090,21 @@ static void power_save_task(void *pvParameters)
 
 static const char *TAG_OVERDISCHARGE = "OVERDISCHARGE PROTECTION";
 
-static void overdischarge_protection_task(void *pvParameters)	// enter deep sleep forever if the battery reaches 0%
+static void overdischarge_protection_task(void *pvParameters)
 {
     ESP_LOGI(TAG_OVERDISCHARGE, "[overdischarge protection task start]");
 
     while (true)
     {
         if (read_battery_value() == 0){
-            ESP_LOGI(TAG_OVERDISCHARGE, "battery reached 0%% -> deep sleep forever to prevent overdischarge");
-            esp_sleep_enable_timer_wakeup(uS_TO_S * 10000000);
+            ESP_LOGW(TAG_OVERDISCHARGE, "Battery 0%%! Entering deep sleep.");
+            // Sleep for 5 minutes. When it wakes, app_main() will check the battery again.
+            esp_sleep_enable_timer_wakeup(300ULL * uS_TO_S);
             esp_deep_sleep_start();
         }
-        vTaskDelay(10000);
+        
+        // Check again in 10 seconds.
+        vTaskDelay(pdMS_TO_TICKS(10000)); 
     }
 }
 
@@ -1119,6 +1122,14 @@ void app_main()
 
     // setup io to measure the battery level
     setup_battery_measurement();
+
+    // Read battery level at startup, if it's 0% then sleep for 5 minutes to allow charging before we start advertising and consuming more power
+    if (read_battery_value() == 0) {
+        ESP_LOGE("BOOT", "Battery is 0%%. Sleeping for 5 minutes...");
+        // Sleep for 5 minutes (300 seconds), then wake up to check if charging
+        esp_sleep_enable_timer_wakeup(300ULL * uS_TO_S); 
+        esp_deep_sleep_start(); 
+    }
 
     /* Configure parameters of an UART driver,
      * communication pins and install the driver */

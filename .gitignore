@@ -1,3 +1,4 @@
 
 .vscode/settings.json
 pgpemu-esp32/.vscode/settings.json
+pgpemu-esp32/main/secrets.c
