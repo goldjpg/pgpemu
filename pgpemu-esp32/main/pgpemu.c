@@ -25,6 +25,7 @@
 #include "pgp-cert.h"
 #include "secrets.h"
 #include "esp_gatt_common_api.h"
+#include "esp_pm.h"
 
 #define uS_TO_S 1000000ULL
 #define GATTS_TABLE_TAG "PGPEMU"
@@ -106,8 +107,8 @@ static uint8_t raw_scan_rsp_data[] = {
 
 
 static esp_ble_adv_params_t adv_params = {
-    .adv_int_min         = 0x20,
-    .adv_int_max         = 0x40,
+    .adv_int_min         = 0x100, // 0x100 * 0.625ms = 160ms
+    .adv_int_max         = 0x200, // 0x200 * 0.625ms = 320ms
     .adv_type            = ADV_TYPE_IND,
     .own_addr_type       = BLE_ADDR_TYPE_PUBLIC,
     .channel_map         = ADV_CHNL_ALL,
@@ -417,6 +418,19 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
                   param->update_conn_params.latency,
                   param->update_conn_params.timeout);
             break;
+        case ESP_GAP_BLE_SEC_REQ_EVT:
+            /* send the positive(true) security response to the peer device to accept the security request.
+            If not accept the security request, should send the security response with negative(false).*/
+            esp_ble_gap_security_rsp(param->ble_security.ble_req.bd_addr, true);
+            break;
+        case ESP_GAP_BLE_AUTH_CMPL_EVT: {
+            if (param->ble_security.auth_cmpl.success) {
+                ESP_LOGI(GATTS_TABLE_TAG, "pair status = success");
+            } else {
+                ESP_LOGI(GATTS_TABLE_TAG, "pair status = fail, reason = 0x%x", param->ble_security.auth_cmpl.fail_reason);
+            }
+            break;
+        }
         default:
             break;
     }
@@ -835,7 +849,6 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
 	    last_conn_id = param->write.conn_id;
 	    last_if = gatts_if;
 	    
-            esp_ble_set_encryption(param->connect.remote_bda, ESP_BLE_SEC_ENCRYPT_MITM);
             break;
         case ESP_GATTS_DISCONNECT_EVT:
             ESP_LOGI(GATTS_TABLE_TAG, "ESP_GATTS_DISCONNECT_EVT, reason = %d", param->disconnect.reason);
@@ -1041,40 +1054,36 @@ static void uart_event_task(void *pvParameters)
 
 static const char *TAG_POWERSAVE = "POWERSAVE";
 
-static void power_save_task(void *pvParameters)	// save power if not connected and periodically wake up
+static void power_save_task(void *pvParameters)
 {
     ESP_LOGI(TAG_POWERSAVE, "[powersave task start]");
-    esp_wifi_stop();
-    disconnected = true;
+    esp_wifi_stop(); // Good, keeps Wi-Fi off
+    
+    TickType_t connection_init_time = 0;
     bool last_dis_state = true;
-    int connection_init = 0;
-    int boot_millis = 0;
-    int last_awake = 10000; // 10s to connect quickly right after startup
 
     while (true)
     {
-        vTaskDelay(50);
-        boot_millis = xTaskGetTickCount() * 10;
+        // Check once per second. No need to wake the CPU up more frequently for a 60s timeout.
+        vTaskDelay(pdMS_TO_TICKS(1000)); 
 
-        if (disconnected){
-            if (boot_millis - last_awake > 400){
-                ESP_LOGI(TAG_POWERSAVE, "not connected for: %i ms -> light sleep", boot_millis - last_awake);
-                esp_sleep_enable_timer_wakeup(uS_TO_S * 10);
-                esp_light_sleep_start();
-                last_awake = boot_millis;
+        if (!disconnected) {
+            if (last_dis_state) { 
+                // State just switched to connected, record the time
+                connection_init_time = xTaskGetTickCount();
             }
-        }else{
-            last_awake = boot_millis;
-            if (last_dis_state){ // state switched to connected
-                connection_init = boot_millis;
-            }
-            if (cert_state != 6 && boot_millis - connection_init > 60000){ // connection timeout
+            
+            // If we are connected, but haven't finished pairing within 60s, disconnect.
+            TickType_t elapsed_ticks = xTaskGetTickCount() - connection_init_time;
+            if (cert_state != 6 && elapsed_ticks > pdMS_TO_TICKS(60000)) { 
                 disconnected = true;
-                ESP_LOGI(TAG_POWERSAVE, "connection timed out");
+                ESP_LOGI(TAG_POWERSAVE, "connection timed out, forcing disconnect");
+                // Note: Consider explicitly dropping the BLE connection here using esp_ble_gatts_close() 
+                // rather than just setting the boolean, otherwise the stack stays connected.
+                esp_ble_gatts_close(last_if, last_conn_id);
             }
         }
         
-        ESP_LOGI(TAG_POWERSAVE, "connected: %d", !disconnected);
         last_dis_state = disconnected;
     }
 }
@@ -1118,10 +1127,20 @@ void app_main()
         .data_bits = UART_DATA_8_BITS,
         .parity = UART_PARITY_DISABLE,
         .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_REF_TICK
     };
 
     uart_param_config(EX_UART_NUM, &uart_config);
+
+    #if CONFIG_PM_ENABLE
+    esp_pm_config_esp32_t pm_config = {
+        .max_freq_mhz = 80, // Maximum CPU frequency in MHz
+        .min_freq_mhz = 10, // Minimum CPU frequency in MHz
+        .light_sleep_enable = true // Allows automatic light sleep
+    };
+    esp_pm_configure(&pm_config);
+    #endif
 
     //Set UART log level
     esp_log_level_set(TAG, ESP_LOG_INFO);
@@ -1195,7 +1214,7 @@ void app_main()
     }
 
     /* set the security iocap & auth_req & key size & init key response key parameters to the stack*/
-    esp_ble_auth_req_t auth_req = ESP_LE_AUTH_BOND;     //bonding with peer device after authentication
+    esp_ble_auth_req_t auth_req = ESP_LE_AUTH_REQ_SC_BOND;     //bonding with peer device after authentication
     esp_ble_io_cap_t iocap = ESP_IO_CAP_NONE;           //set the IO capability to No output No input
     uint8_t key_size = 16;      //the key size should be 7~16 bytes
     uint8_t init_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
