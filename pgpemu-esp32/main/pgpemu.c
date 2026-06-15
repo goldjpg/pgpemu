@@ -1252,10 +1252,8 @@ void app_main()
         return;
     }
 
-    /* Use Legacy Bonding (ESP_LE_AUTH_BOND) instead of SC_BOND. 
-       Secure Connections takes ~3 seconds of CPU time on the ESP32 to compute, 
-       which eats into the app's 5-second timeout. Legacy is nearly instant. */
-    esp_ble_auth_req_t auth_req = ESP_LE_AUTH_BOND;     
+
+    esp_ble_auth_req_t auth_req = ESP_LE_AUTH_REQ_SC_BOND;     
     esp_ble_io_cap_t iocap = ESP_IO_CAP_NONE;           
     uint8_t key_size = 16;      
     uint8_t init_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
