@@ -420,9 +420,8 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
                   param->update_conn_params.timeout);
             break;
         case ESP_GAP_BLE_SEC_REQ_EVT:
-            ESP_LOGI(GATTS_TABLE_TAG, "ESP_GAP_BLE_SEC_REQ_EVT");
-            /* send the positive(true) security response to the peer device to accept the security request.
-            If not accept the security request, should send the security response with negative(false).*/
+            ESP_LOGI(GATTS_TABLE_TAG, "ESP_GAP_BLE_SEC_REQ_EVT - Accepting pairing");
+            /* send the positive(true) security response to the peer device to accept the security request. */
             esp_ble_gap_security_rsp(param->ble_security.ble_req.bd_addr, true);
             break;
         case ESP_GAP_BLE_AUTH_CMPL_EVT: {
@@ -875,18 +874,9 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         case ESP_GATTS_CONNECT_EVT:
             ESP_LOGI(GATTS_TABLE_TAG, "ESP_GATTS_CONNECT_EVT, conn_id = %d", param->connect.conn_id);
             ESP_LOG_BUFFER_HEX(GATTS_TABLE_TAG, param->connect.remote_bda, 6);
-            esp_ble_conn_update_params_t conn_params = {0};
-            memcpy(conn_params.bda, param->connect.remote_bda, sizeof(esp_bd_addr_t));
-            /* For the IOS system, please reference the apple official documents about the ble connection parameters restrictions. */
-            conn_params.latency = 0;
-            conn_params.max_int = 0x20;    // max_int = 0x20*1.25ms = 40ms
-            conn_params.min_int = 0x10;    // min_int = 0x10*1.25ms = 20ms
-            conn_params.timeout = 400;    // timeout = 400*10ms = 4000ms
-            //start sent the update connection parameters to the peer device.
-            esp_ble_gap_update_conn_params(&conn_params);
-	    last_conn_id = param->write.conn_id;
-	    last_if = gatts_if;
-	    
+
+            last_conn_id = param->connect.conn_id; // Ensure this uses param->connect
+            last_if = gatts_if;
             break;
         case ESP_GATTS_DISCONNECT_EVT:
             ESP_LOGI(GATTS_TABLE_TAG, "ESP_GATTS_DISCONNECT_EVT, reason = %d", param->disconnect.reason);
@@ -1262,21 +1252,25 @@ void app_main()
         return;
     }
 
-    /* set the security iocap & auth_req & key size & init key response key parameters to the stack*/
-    esp_ble_auth_req_t auth_req = ESP_LE_AUTH_REQ_SC_BOND;     //bonding with peer device after authentication
-    esp_ble_io_cap_t iocap = ESP_IO_CAP_NONE;           //set the IO capability to No output No input
-    uint8_t key_size = 16;      //the key size should be 7~16 bytes
+    /* Use Legacy Bonding (ESP_LE_AUTH_BOND) instead of SC_BOND. 
+       Secure Connections takes ~3 seconds of CPU time on the ESP32 to compute, 
+       which eats into the app's 5-second timeout. Legacy is nearly instant. */
+    esp_ble_auth_req_t auth_req = ESP_LE_AUTH_BOND;     
+    esp_ble_io_cap_t iocap = ESP_IO_CAP_NONE;           
+    uint8_t key_size = 16;      
     uint8_t init_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
     uint8_t rsp_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
+    
     esp_ble_gap_set_security_param(ESP_BLE_SM_AUTHEN_REQ_MODE, &auth_req, sizeof(uint8_t));
     esp_ble_gap_set_security_param(ESP_BLE_SM_IOCAP_MODE, &iocap, sizeof(uint8_t));
     esp_ble_gap_set_security_param(ESP_BLE_SM_MAX_KEY_SIZE, &key_size, sizeof(uint8_t));
-    /* If your BLE device act as a Slave, the init_key means you hope which types of key of the master should distribut to you,
-    and the response key means which key you can distribut to the Master;
-    If your BLE device act as a master, the response key means you hope which types of key of the slave should distribut to you,
-    and the init key means which key you can distribut to the slave. */
     esp_ble_gap_set_security_param(ESP_BLE_SM_SET_INIT_KEY, &init_key, sizeof(uint8_t));
     esp_ble_gap_set_security_param(ESP_BLE_SM_SET_RSP_KEY, &rsp_key, sizeof(uint8_t));
+
+    /* --- NEW FIX --- */
+    /* Enable BLE local privacy so the ESP32 can recognize the Android phone 
+       even when it rotates its MAC address. This prevents the recurring dialogs. */
+    esp_ble_gap_config_local_privacy(true);
 
 
     esp_err_t local_mtu_ret = esp_ble_gatt_set_local_mtu(500);
