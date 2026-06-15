@@ -51,7 +51,7 @@ void hexdump(const char *msg, const uint8_t *data, int len)
 {
 #ifdef ESP_PLATFORM
         ESP_LOGI("PGPEMU", "%s", msg);	
-        esp_log_buffer_hex("PGPEMU", data, len);	
+        ESP_LOG_BUFFER_HEX("PGPEMU", data, len);	
 #else	
 	if (msg) {
 		printf("%s", msg);

@@ -3,9 +3,9 @@
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include "freertos/queue.h"
-#include "driver/adc.h"
+#include "esp_adc/adc_oneshot.h"
 #include "driver/uart.h"
-#include "esp32/aes.h"
+#include "aes/esp_aes.h"
 
 #define EX_UART_NUM UART_NUM_0
 
@@ -14,8 +14,9 @@
 #include "esp_sleep.h"
 #include "esp_wifi.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "nvs_flash.h"
-#include "esp_adc_cal.h"
+// #include "esp_adc_cal.h"
 #include "esp_bt.h"
 
 #include "esp_gap_ble_api.h"
@@ -419,6 +420,7 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
                   param->update_conn_params.timeout);
             break;
         case ESP_GAP_BLE_SEC_REQ_EVT:
+            ESP_LOGI(GATTS_TABLE_TAG, "ESP_GAP_BLE_SEC_REQ_EVT");
             /* send the positive(true) security response to the peer device to accept the security request.
             If not accept the security request, should send the security response with negative(false).*/
             esp_ble_gap_security_rsp(param->ble_security.ble_req.bd_addr, true);
@@ -431,7 +433,33 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
             }
             break;
         }
+        case ESP_GAP_BLE_REMOVE_BOND_DEV_COMPLETE_EVT: {
+            ESP_LOGI(GATTS_TABLE_TAG, "ESP_GAP_BLE_REMOVE_BOND_DEV_COMPLETE_EVT status = %d", param->remove_bond_dev_cmpl.status);
+            break;
+        }
+        case ESP_GAP_BLE_PASSKEY_REQ_EVT:
+            ESP_LOGI(GATTS_TABLE_TAG, "ESP_GAP_BLE_PASSKEY_REQ_EVT");
+            break;
+        case ESP_GAP_BLE_OOB_REQ_EVT:
+            ESP_LOGI(GATTS_TABLE_TAG, "ESP_GAP_BLE_OOB_REQ_EVT");
+            break;
+        case ESP_GAP_BLE_LOCAL_IR_EVT:
+            ESP_LOGI(GATTS_TABLE_TAG, "ESP_GAP_BLE_LOCAL_IR_EVT");
+            break;
+        case ESP_GAP_BLE_LOCAL_ER_EVT:
+            ESP_LOGI(GATTS_TABLE_TAG, "ESP_GAP_BLE_LOCAL_ER_EVT");
+            break;
+        case ESP_GAP_BLE_NC_REQ_EVT:
+            ESP_LOGI(GATTS_TABLE_TAG, "ESP_GAP_BLE_NC_REQ_EVT, passkey:%lu", (unsigned long)param->ble_security.key_notif.passkey);
+            break;
+        case ESP_GAP_BLE_PASSKEY_NOTIF_EVT:
+            ESP_LOGI(GATTS_TABLE_TAG, "ESP_GAP_BLE_PASSKEY_NOTIF_EVT, passkey:%06lu", (unsigned long)param->ble_security.key_notif.passkey);
+            break;
+        case ESP_GAP_BLE_KEY_EVT:
+            ESP_LOGI(GATTS_TABLE_TAG, "ESP_GAP_BLE_KEY_EVT key type = %d", param->ble_security.ble_key.key_type);
+            break;
         default:
+            ESP_LOGI(GATTS_TABLE_TAG, "GAP EVENT %d", event);
             break;
     }
 }
@@ -519,11 +547,11 @@ void handle_protocol(esp_gatt_if_t gatts_if,
 
 			memcpy(cert_buffer, temp, 52);
 
-			//esp_log_buffer_hex(GATTS_TABLE_TAG, temp, sizeof(temp));
+			//ESP_LOG_BUFFER_HEX(GATTS_TABLE_TAG, temp, sizeof(temp));
 
 			esp_ble_gatts_set_attr_value(certificate_handle_table[IDX_CHAR_SFIDA_TO_CENTRAL_VAL], 52, cert_buffer);
 
-			//esp_log_buffer_hex(GATTS_TABLE_TAG, cert_buffer, 52);
+			//ESP_LOG_BUFFER_HEX(GATTS_TABLE_TAG, cert_buffer, 52);
 
 			cert_state = 1;
 			esp_ble_gatts_send_indicate(gatts_if, conn_id, certificate_handle_table[IDX_CHAR_SFIDA_COMMANDS_VAL], sizeof(notify_data), notify_data, false);
@@ -545,7 +573,7 @@ void handle_protocol(esp_gatt_if_t gatts_if,
 		notify_data[0] = 0x02;
 
 		ESP_LOGI(GATTS_TABLE_TAG, "Sending response");
-		esp_log_buffer_hex(GATTS_TABLE_TAG, temp, sizeof(temp));
+		ESP_LOG_BUFFER_HEX(GATTS_TABLE_TAG, temp, sizeof(temp));
 
 		memcpy(cert_buffer, temp, 20);
 		esp_ble_gatts_set_attr_value(certificate_handle_table[IDX_CHAR_SFIDA_TO_CENTRAL_VAL], 20, cert_buffer);
@@ -561,7 +589,7 @@ void handle_protocol(esp_gatt_if_t gatts_if,
 		memset(temp, 0, sizeof(temp));
 		decrypt_next(prepare_buf, session_key, temp+4);
 		ESP_LOGI(GATTS_TABLE_TAG, "DEBUG:");
-		esp_log_buffer_hex(GATTS_TABLE_TAG, temp, sizeof(temp));
+		ESP_LOG_BUFFER_HEX(GATTS_TABLE_TAG, temp, sizeof(temp));
 
 		has_reconnect_key = 1;
 		//should be random, but this is easier for debugging
@@ -579,7 +607,7 @@ void handle_protocol(esp_gatt_if_t gatts_if,
         case 3:
         {
 		if (datalen == 20) { //just assume server responds correctly
-			esp_log_buffer_hex(GATTS_TABLE_TAG, prepare_buf,
+			ESP_LOG_BUFFER_HEX(GATTS_TABLE_TAG, prepare_buf,
 					   datalen);
 			uint8_t notify_data[4] = {0x04, 0x00, 0x01, 0x00};
 			esp_ble_gatts_send_indicate(gatts_if,
@@ -596,7 +624,7 @@ void handle_protocol(esp_gatt_if_t gatts_if,
 		generate_reconnect_response(session_key, prepare_buf+4, cert_buffer + 4);
 		cert_buffer[0] = 5;
 
-		esp_log_buffer_hex(GATTS_TABLE_TAG, cert_buffer, 20);
+		ESP_LOG_BUFFER_HEX(GATTS_TABLE_TAG, cert_buffer, 20);
 			
 		uint8_t notify_data[4];
 		memset(notify_data, 0, 4);
@@ -647,7 +675,7 @@ void handle_led_notify_from_app(const uint8_t *buffer)
 
 void pgp_exec_write_event_env(esp_gatt_if_t gatts_if, prepare_type_env_t *prepare_write_env, esp_ble_gatts_cb_param_t *param){
     if (param->exec_write.exec_write_flag == ESP_GATT_PREP_WRITE_EXEC && prepare_write_env->prepare_buf){
-        esp_log_buffer_hex(GATTS_TABLE_TAG, prepare_write_env->prepare_buf, prepare_write_env->prepare_len);
+        ESP_LOG_BUFFER_HEX(GATTS_TABLE_TAG, prepare_write_env->prepare_buf, prepare_write_env->prepare_len);
 
 	//it seems that this will be called only by Android version of the Pokemon Go App
 	ESP_LOGI(GATTS_TABLE_TAG, "WRITE EVT");
@@ -675,27 +703,37 @@ void pgp_exec_write_event_env(esp_gatt_if_t gatts_if, prepare_type_env_t *prepar
     prepare_write_env->prepare_len = 0;
 }
 
+static adc_oneshot_unit_handle_t adc1_handle;
+
 static void setup_battery_measurement(){
-    esp_adc_cal_characteristics_t adc1_chars;
-    esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_DEFAULT, 0, &adc1_chars);
-    adc1_config_width(ADC_WIDTH_BIT_DEFAULT);
-    adc1_config_channel_atten(ADC1_CHANNEL_7, ADC_ATTEN_DB_11);
+    adc_oneshot_unit_init_cfg_t init_config1 = {
+        .unit_id = ADC_UNIT_1,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &adc1_handle));
+
+    adc_oneshot_chan_cfg_t config = {
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+        .atten = ADC_ATTEN_DB_12,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_7, &config));
 }
 
 static uint8_t read_battery_value()
 {
-    uint8_t percentage = 50; // default value if the measurement failes
-    float voltage = adc1_get_raw(ADC1_CHANNEL_7) / 4096.0 * 6.79;
-    if (voltage > 0.5){ // measurement successful
-        percentage = 3775.5 * pow(voltage, 4) - 59209 * pow(voltage, 3) + 347670 * pow(voltage, 2) - 905717 * voltage + 883083;
-        if (voltage > 4.19) percentage = 100;
-        else if (voltage <= 3.70) percentage = 0;
-        if (percentage > 100) percentage = 100;
-        else if (percentage < 0) percentage = 0;
+    int percentage = 50; // default value if the measurement failes
+    int raw_out = 0;
+    if (adc_oneshot_read(adc1_handle, ADC_CHANNEL_7, &raw_out) == ESP_OK) {
+        float voltage = raw_out / 4096.0 * 6.79;
+        if (voltage > 0.5){ // measurement successful
+            percentage = 3775.5 * pow(voltage, 4) - 59209 * pow(voltage, 3) + 347670 * pow(voltage, 2) - 905717 * voltage + 883083;
+            if (voltage > 4.19) percentage = 100;
+            else if (voltage <= 3.70) percentage = 0;
+            if (percentage > 100) percentage = 100;
+            else if (percentage < 0) percentage = 0;
+        }
+        ESP_LOGI("BATTERY", "voltage: %f percentage: %i", voltage, percentage);
     }
-    
-    ESP_LOGI("BATTERY", "voltage: %f percentage: %i", voltage, percentage);
-    return percentage;
+    return (uint8_t)percentage;
 }
 
 static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param)
@@ -743,7 +781,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
 			 char_name_from_handle(param->read.handle));
 		if (cert_state == 1) {
 			ESP_LOGI(GATTS_TABLE_TAG, "DATA SENT TO APP");
-			esp_log_buffer_hex(GATTS_TABLE_TAG, cert_buffer, 52);
+			ESP_LOG_BUFFER_HEX(GATTS_TABLE_TAG, cert_buffer, 52);
 		}
             if (battery_handle_table[IDX_CHAR_BATTERY_LEVEL_VAL] == param->read.handle){
                 uint8_t battery_value[] = {read_battery_value()};
@@ -756,7 +794,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
 			// the data length of gattc write  must be less than MAX_VALUE_LENGTH.
 			ESP_LOGI(GATTS_TABLE_TAG, "GATT_WRITE_EVT (state=%d), handle = %d, value len = %d, value :", cert_state, param->write.handle, param->write.len);
 			ESP_LOGI(GATTS_TABLE_TAG, "DATA FROM APP");
-			esp_log_buffer_hex(GATTS_TABLE_TAG, param->write.value, param->write.len);
+			ESP_LOG_BUFFER_HEX(GATTS_TABLE_TAG, param->write.value, param->write.len);
 
 			if (certificate_handle_table[IDX_CHAR_SFIDA_COMMANDS_CFG] == param->write.handle) {
 
@@ -836,7 +874,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
             break;
         case ESP_GATTS_CONNECT_EVT:
             ESP_LOGI(GATTS_TABLE_TAG, "ESP_GATTS_CONNECT_EVT, conn_id = %d", param->connect.conn_id);
-            esp_log_buffer_hex(GATTS_TABLE_TAG, param->connect.remote_bda, 6);
+            ESP_LOG_BUFFER_HEX(GATTS_TABLE_TAG, param->connect.remote_bda, 6);
             esp_ble_conn_update_params_t conn_params = {0};
             memcpy(conn_params.bda, param->connect.remote_bda, sizeof(esp_bd_addr_t));
             /* For the IOS system, please reference the apple official documents about the ble connection parameters restrictions. */
@@ -976,7 +1014,7 @@ static void uart_event_task(void *pvParameters)
     uint8_t* dtmp = (uint8_t*) malloc(RD_BUF_SIZE);
     for(;;) {
         //Waiting for UART event.
-        if(xQueueReceive(uart0_queue, (void * )&event, (portTickType)portMAX_DELAY)) {
+        if(xQueueReceive(uart0_queue, (void * )&event, (TickType_t)portMAX_DELAY)) {
             bzero(dtmp, RD_BUF_SIZE);
             ESP_LOGI(TAG, "uart[%d] event:", EX_UART_NUM);
             switch(event.type) {
@@ -1187,7 +1225,7 @@ void app_main()
 
 
 
-    esp_log_buffer_hex(GATTS_TABLE_TAG, cert_buffer, sizeof(cert_buffer));
+    ESP_LOG_BUFFER_HEX(GATTS_TABLE_TAG, cert_buffer, sizeof(cert_buffer));
     ret = esp_bt_controller_enable(ESP_BT_MODE_BLE);
     if (ret) {
         ESP_LOGE(GATTS_TABLE_TAG, "%s enable controller failed: %s", __func__, esp_err_to_name(ret));
