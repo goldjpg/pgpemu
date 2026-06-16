@@ -1,4 +1,3 @@
-#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -721,16 +720,36 @@ static uint8_t read_battery_value()
 {
     int percentage = 50; // default value if the measurement failes
     int raw_out = 0;
-    if (adc_oneshot_read(adc1_handle, ADC_CHANNEL_7, &raw_out) == ESP_OK) {
-        float voltage = raw_out / 4096.0 * 6.79;
+    int raw_sum = 0;
+    const int samples = 16;
+
+    // Take multiple samples to smooth out voltage spikes and noise
+    for (int i = 0; i < samples; i++) {
+        if (adc_oneshot_read(adc1_handle, ADC_CHANNEL_7, &raw_out) == ESP_OK) {
+            raw_sum += raw_out;
+        }
+    }
+
+    if (raw_sum > 0) {
+        float voltage = (raw_sum / (float)samples) / 4096.0 * 6.79;
         if (voltage > 0.5){ // measurement successful
-            percentage = 3775.5 * pow(voltage, 4) - 59209 * pow(voltage, 3) + 347670 * pow(voltage, 2) - 905717 * voltage + 883083;
-            if (voltage > 4.19) percentage = 100;
-            else if (voltage <= 3.70) percentage = 0;
+            // Efficient piecewise linear approximation for a standard LiPo discharge curve
+            if (voltage >= 4.15) {
+                percentage = 100;
+            } else if (voltage >= 4.00) {
+                percentage = 80 + (voltage - 4.00) * (20 / 0.15);
+            } else if (voltage >= 3.80) {
+                percentage = 30 + (voltage - 3.80) * (50 / 0.20);
+            } else if (voltage >= 3.70) {
+                percentage = 5 + (voltage - 3.70) * (25 / 0.10);
+            } else {
+                percentage = 0;
+            }
+
             if (percentage > 100) percentage = 100;
             else if (percentage < 0) percentage = 0;
         }
-        ESP_LOGI("BATTERY", "voltage: %f percentage: %i", voltage, percentage);
+        ESP_LOGI("BATTERY", "voltage: %.2f percentage: %i", voltage, percentage);
     }
     return (uint8_t)percentage;
 }
@@ -1088,6 +1107,7 @@ static void power_save_task(void *pvParameters)
     esp_wifi_stop(); // Good, keeps Wi-Fi off
     
     TickType_t connection_init_time = 0;
+    TickType_t disconnect_time = xTaskGetTickCount();
     bool last_dis_state = true;
 
     while (true)
@@ -1110,6 +1130,18 @@ static void power_save_task(void *pvParameters)
                 // rather than just setting the boolean, otherwise the stack stays connected.
                 esp_ble_gatts_close(last_if, last_conn_id);
             }
+        } else {
+            if (!last_dis_state) {
+                // State just switched to disconnected, record the time
+                disconnect_time = xTaskGetTickCount();
+            }
+            
+            // If disconnected for more than 10 minutes, go to deep sleep indefinitely.
+            TickType_t elapsed_disconnect_ticks = xTaskGetTickCount() - disconnect_time;
+            if (elapsed_disconnect_ticks > pdMS_TO_TICKS(600000)) { // 10 mins = 600,000 ms
+                ESP_LOGI(TAG_POWERSAVE, "Device disconnected for 10 minutes, entering deep sleep forever.");
+                esp_deep_sleep_start();
+            }
         }
         
         last_dis_state = disconnected;
@@ -1125,10 +1157,8 @@ static void overdischarge_protection_task(void *pvParameters)
     while (true)
     {
         if (read_battery_value() == 0){
-            ESP_LOGW(TAG_OVERDISCHARGE, "Battery 0%%! Entering deep sleep.");
-            // Sleep for 5 minutes. When it wakes, app_main() will check the battery again.
-            esp_sleep_enable_timer_wakeup(300ULL * uS_TO_S);
-            esp_deep_sleep_start();
+            ESP_LOGW(TAG_OVERDISCHARGE, "Battery 0%%! Entering deep sleep forever.");
+            //esp_deep_sleep_start();
         }
         
         // Check again in 10 seconds.
@@ -1151,11 +1181,9 @@ void app_main()
     // setup io to measure the battery level
     setup_battery_measurement();
 
-    // Read battery level at startup, if it's 0% then sleep for 5 minutes to allow charging before we start advertising and consuming more power
+    // Read battery level at startup, if it's 0% then sleep forever to allow charging before we start advertising and consuming more power
     if (read_battery_value() == 0) {
-        ESP_LOGE("BOOT", "Battery is 0%%. Sleeping for 5 minutes...");
-        // Sleep for 5 minutes (300 seconds), then wake up to check if charging
-        esp_sleep_enable_timer_wakeup(300ULL * uS_TO_S); 
+        ESP_LOGE("BOOT", "Battery is 0%%. Sleeping forever...");
         esp_deep_sleep_start(); 
     }
 
